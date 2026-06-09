@@ -116,6 +116,80 @@ class TestBackendWrapperCoalescing(unittest.TestCase):
                 f"{recv_tensors[i].tolist()}, expected {expected.tolist()}",
             )
 
+    def test_allreduce_coalesced_multi_tensor(self):
+        """Multiple all_reduce calls inside a coalescing manager produce
+        correct results via the multi-tensor ``allreduce_coalesced`` path."""
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        t1 = torch.full((4,), float(rank), dtype=torch.float32)
+        t2 = torch.full((8,), float(rank * 10), dtype=torch.float32)
+
+        with dist._coalescing_manager():
+            dist.all_reduce(t1)
+            dist.all_reduce(t2)
+
+        expected_sum = float(world_size * (world_size - 1) // 2)
+        self.assertTrue(
+            torch.allclose(t1, torch.full_like(t1, expected_sum)),
+            f"t1 mismatch: {t1.tolist()}",
+        )
+        self.assertTrue(
+            torch.allclose(t2, torch.full_like(t2, expected_sum * 10)),
+            f"t2 mismatch: {t2.tolist()}",
+        )
+
+    def test_allgather_into_tensor_coalesced_multi_tensor(self):
+        """Multiple all_gather_into_tensor calls inside a coalescing manager
+        produce correct results via ``allgather_into_tensor_coalesced``."""
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        in1 = torch.full((4,), float(rank), dtype=torch.float32)
+        in2 = torch.full((6,), float(rank + 100), dtype=torch.float32)
+        out1 = torch.empty(4 * world_size, dtype=torch.float32)
+        out2 = torch.empty(6 * world_size, dtype=torch.float32)
+
+        with dist._coalescing_manager():
+            dist.all_gather_into_tensor(out1, in1)
+            dist.all_gather_into_tensor(out2, in2)
+
+        for r in range(world_size):
+            chunk1 = out1[r * 4 : (r + 1) * 4]
+            expected1 = torch.full((4,), float(r), dtype=torch.float32)
+            self.assertTrue(
+                torch.equal(chunk1, expected1),
+                f"out1 rank {r}: got {chunk1.tolist()}, expected {expected1.tolist()}",
+            )
+            chunk2 = out2[r * 6 : (r + 1) * 6]
+            expected2 = torch.full((6,), float(r + 100), dtype=torch.float32)
+            self.assertTrue(
+                torch.equal(chunk2, expected2),
+                f"out2 rank {r}: got {chunk2.tolist()}, expected {expected2.tolist()}",
+            )
+
+    def test_reduce_scatter_tensor_coalesced_multi_tensor(self):
+        """Multiple reduce_scatter_tensor calls inside a coalescing manager
+        produce correct results via ``reduce_scatter_tensor_coalesced``."""
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        in1 = torch.full((4 * world_size,), float(rank), dtype=torch.float32)
+        in2 = torch.full((6 * world_size,), float(rank * 10), dtype=torch.float32)
+        out1 = torch.empty(4, dtype=torch.float32)
+        out2 = torch.empty(6, dtype=torch.float32)
+
+        with dist._coalescing_manager():
+            dist.reduce_scatter_tensor(out1, in1)
+            dist.reduce_scatter_tensor(out2, in2)
+
+        expected_sum = float(world_size * (world_size - 1) // 2)
+        self.assertTrue(
+            torch.allclose(out1, torch.full_like(out1, expected_sum)),
+            f"out1 mismatch: {out1.tolist()}",
+        )
+        self.assertTrue(
+            torch.allclose(out2, torch.full_like(out2, expected_sum * 10)),
+            f"out2 mismatch: {out2.tolist()}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

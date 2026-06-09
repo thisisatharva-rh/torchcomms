@@ -188,21 +188,18 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce(
 c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce_coalesced(
     std::vector<at::Tensor>& tensors,
     const c10d::AllreduceCoalescedOptions& opts) {
-  TORCH_CHECK(
-      tensors.size() == 1,
-      "Only single tensor supported, but got ",
-      tensors.size(),
-      " tensors");
   AllReduceOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
-      comm_->all_reduce(
-          tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts),
-      tensors);
+  c10::intrusive_ptr<TorchWork> last_work;
+  for (auto& t : tensors) {
+    last_work =
+        comm_->all_reduce(t, toReduceOp(opts.reduceOp), opts.asyncOp, bopts);
+  }
+  return c10::make_intrusive<WorkWrapper>(std::move(last_work), tensors);
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce(
@@ -311,20 +308,15 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_coalesced(
       outputTensorLists.at(0));
 }
 
-// Note: Coalesced operations with multiple input/output tensors are not yet
-// supported. Currently only single tensor is supported. When extending this,
-// iterate over all tensors and coalesce them into a single backend call.
 c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_into_tensor_coalesced(
     std::vector<at::Tensor>& output_tensors,
     std::vector<at::Tensor>& inputTensors,
     const c10d::AllgatherOptions& opts) {
   TORCH_CHECK(
-      output_tensors.size() == 1,
-      "Only single output tensor supported, but got ",
-      output_tensors.size());
-  TORCH_CHECK(
-      inputTensors.size() == 1,
-      "Only single input tensor supported, but got ",
+      output_tensors.size() == inputTensors.size(),
+      "Output and input tensor count mismatch: ",
+      output_tensors.size(),
+      " vs ",
       inputTensors.size());
   AllGatherSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
@@ -332,10 +324,12 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_into_tensor_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
-      comm_->all_gather_single(
-          output_tensors.at(0), inputTensors.at(0), opts.asyncOp, bopts),
-      output_tensors);
+  c10::intrusive_ptr<TorchWork> last_work;
+  for (size_t i = 0; i < inputTensors.size(); ++i) {
+    last_work = comm_->all_gather_single(
+        output_tensors[i], inputTensors[i], opts.asyncOp, bopts);
+  }
+  return c10::make_intrusive<WorkWrapper>(std::move(last_work), output_tensors);
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::_allgather_base(
@@ -455,20 +449,15 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter(
       outputTensors);
 }
 
-// Note: Coalesced operations with multiple input/output tensors are not yet
-// supported. Currently only single tensor is supported. When extending this,
-// iterate over all tensors and coalesce them into a single backend call.
 c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter_tensor_coalesced(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const c10d::ReduceScatterOptions& opts) {
   TORCH_CHECK(
-      outputTensors.size() == 1,
-      "Only single output tensor supported, but got ",
-      outputTensors.size());
-  TORCH_CHECK(
-      inputTensors.size() == 1,
-      "Only single input tensor supported, but got ",
+      outputTensors.size() == inputTensors.size(),
+      "Output and input tensor count mismatch: ",
+      outputTensors.size(),
+      " vs ",
       inputTensors.size());
   ReduceScatterSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
@@ -476,14 +465,16 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter_tensor_coalesced(
   } else {
     bopts.timeout = options_->timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
-      comm_->reduce_scatter_single(
-          outputTensors.at(0),
-          inputTensors.at(0),
-          toReduceOp(opts.reduceOp),
-          opts.asyncOp,
-          bopts),
-      outputTensors);
+  c10::intrusive_ptr<TorchWork> last_work;
+  for (size_t i = 0; i < inputTensors.size(); ++i) {
+    last_work = comm_->reduce_scatter_single(
+        outputTensors[i],
+        inputTensors[i],
+        toReduceOp(opts.reduceOp),
+        opts.asyncOp,
+        bopts);
+  }
+  return c10::make_intrusive<WorkWrapper>(std::move(last_work), outputTensors);
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::_reduce_scatter_base(
