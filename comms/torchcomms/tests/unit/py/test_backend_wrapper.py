@@ -9,6 +9,7 @@ underlying TorchComm fire.
 """
 
 import unittest
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -120,6 +121,37 @@ class TestBackendWrapperHooks(unittest.TestCase):
         pg.allreduce([tensor]).wait()
         self.assertEqual(pre_count, 1)
         self.assertEqual(post_count, 1)
+
+        comm.finalize()
+
+
+class TestBackendWrapperWaitTimeout(unittest.TestCase):
+    def test_wait_with_timeout_succeeds_when_already_complete(self) -> None:
+        """wait(timeout) returns normally when the operation completed before the deadline."""
+        comm, pg = _make_wrapped_pg("test_wait_timeout_ok")
+
+        tensor = torch.ones(10)
+        work = pg.allreduce([tensor])
+        work.wait(timedelta(seconds=1))
+
+        comm.finalize()
+
+    def test_wait_with_timeout_succeeds_for_barrier(self) -> None:
+        """wait(timeout) works for barrier (empty output tensors path)."""
+        comm, pg = _make_wrapped_pg("test_wait_timeout_barrier")
+
+        work = pg.barrier()
+        work.wait(timedelta(seconds=1))
+
+        comm.finalize()
+
+    def test_wait_without_timeout_still_works(self) -> None:
+        """Existing default wait() (no timeout) continues to work after the change."""
+        comm, pg = _make_wrapped_pg("test_wait_no_timeout")
+
+        tensor = torch.ones(10)
+        work = pg.allreduce([tensor])
+        work.wait()
 
         comm.finalize()
 

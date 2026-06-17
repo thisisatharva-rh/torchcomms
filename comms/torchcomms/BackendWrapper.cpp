@@ -92,22 +92,25 @@ WorkWrapper::WorkWrapper(
     // resolve now.
     future_->markCompleted(c10::IValue(outputTensors_));
   } else {
-    // For other device types (CPU) async: register end hook so
-    // future completes when setStatus fires.
-    work_->registerWorkEndHook([future = future_, tensors = outputTensors_]() {
-      if (!future->completed()) {
-        future->markCompleted(c10::IValue(tensors));
-      }
-    });
+    work_->registerWorkEndHook(
+        [this, future = future_, tensors = outputTensors_]() {
+          if (!future->completed()) {
+            future->markCompleted(c10::IValue(tensors));
+          }
+          finish();
+        });
   }
 }
 
 bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
-  if (timeout != kNoTimeout) {
-    auto ex = std::make_exception_ptr(
-        std::runtime_error("wait timeout not supported"));
-    finish(ex);
-    std::rethrow_exception(ex);
+  if (timeout != kNoTimeout && !future_->completed()) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (!cv_.wait_for(lock, timeout, [this] { return completed_; })) {
+      auto ex = std::make_exception_ptr(
+          std::runtime_error("Operation timed out!"));
+      finish(ex);
+      std::rethrow_exception(ex);
+    }
   }
   try {
     work_->wait();
